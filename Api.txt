@@ -1,0 +1,601 @@
+// ===================================================================================
+//
+// 🔗 GNC BLOCKCHAIN INTEGRATION MODULE
+//
+// ===================================================================================
+
+const axios = require('axios');
+
+// GNC Blockchain Configuration
+const GNC_BLOCKCHAIN_URL = process.env.GNC_BLOCKCHAIN_URL || 'https://your-gnc-blockchain.railway.app';
+const CASINO_WALLET_ADDRESS = process.env.CASINO_WALLET_ADDRESS;
+const CASINO_PRIVATE_KEY = process.env.CASINO_PRIVATE_KEY;
+const MIN_CONFIRMATIONS = parseInt(process.env.MIN_CONFIRMATIONS || '3');
+
+// ===================================================================================
+//
+// 🪙 GNC BLOCKCHAIN API CLIENT
+//
+// ===================================================================================
+
+class GNCBlockchainClient {
+    constructor() {
+        this.baseURL = GNC_BLOCKCHAIN_URL;
+        this.axios = axios.create({
+            baseURL: this.baseURL,
+            timeout: 30000,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${process.env.GNC_API_KEY}`
+            }
+        });
+    }
+
+    // Get GNC balance for a wallet address
+    async getBalance(walletAddress) {
+        try {
+            const response = await this.axios.get(`/api/balance/${walletAddress}`);
+            return {
+                success: true,
+                balance: response.data.balance,
+                confirmed: response.data.confirmed,
+                pending: response.data.pending
+            };
+        } catch (error) {
+            console.error('GNC Balance Error:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Transfer GNC tokens
+    async transferTokens(fromAddress, toAddress, amount, privateKey) {
+        try {
+            const response = await this.axios.post('/api/transfer', {
+                from: fromAddress,
+                to: toAddress,
+                amount: amount,
+                privateKey: privateKey
+            });
+            return {
+                success: true,
+                transactionHash: response.data.txHash,
+                txId: response.data.txId
+            };
+        } catch (error) {
+            console.error('GNC Transfer Error:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Get transaction status
+    async getTransactionStatus(txHash) {
+        try {
+            const response = await this.axios.get(`/api/transaction/${txHash}`);
+            return {
+                success: true,
+                status: response.data.status,
+                confirmations: response.data.confirmations,
+                blockHeight: response.data.blockHeight
+            };
+        } catch (error) {
+            console.error('GNC Transaction Status Error:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Create new wallet for user
+    async createWallet() {
+        try {
+            const response = await this.axios.post('/api/wallet/create');
+            return {
+                success: true,
+                address: response.data.address,
+                privateKey: response.data.privateKey
+            };
+        } catch (error) {
+            console.error('GNC Wallet Creation Error:', error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    // Validate wallet address
+    async validateAddress(address) {
+        try {
+            const response = await this.axios.get(`/api/validate/${address}`);
+            return { success: true, valid: response.data.valid };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
+    }
+}
+
+const gncClient = new GNCBlockchainClient();
+
+// ===================================================================================
+//
+// 💰 CASINO WALLET MANAGEMENT
+//
+// ===================================================================================
+
+// Enhanced user registration with GNC wallet
+app.post('/api/register', async (req, res) => {
+    const { username, email, password, walletAddress } = req.body;
+
+    if (!username || !email || !password) {
+        return res.status(400).json({ success: false, error: 'Username, email, and password are required.' });
+    }
+
+    try {
+        // Validate GNC wallet address if provided
+        let userWalletAddress = walletAddress;
+        if (walletAddress) {
+            const validation = await gncClient.validateAddress(walletAddress);
+            if (!validation.success || !validation.valid) {
+                return res.status(400).json({ success: false, error: 'Invalid GNC wallet address.' });
+            }
+        } else {
+            // Create new GNC wallet for user
+            const newWallet = await gncClient.createWallet();
+            if (!newWallet.success) {
+                return res.status(500).json({ success: false, error: 'Failed to create GNC wallet.' });
+            }
+            userWalletAddress = newWallet.address;
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const initialUserData = {
+            username,
+            password: hashedPassword,
+            balance: 0, // Start with 0, users deposit GNC
+            gncWalletAddress: userWalletAddress,
+            totalWon: 0,
+            totalLost: 0,
+            gamesPlayed: 0,
+            lastPlayed: new Date().toISOString(),
+            level: 1,
+            gameStats: {
+                keno: { played: 0, won: 0, totalBet: 0, totalWon: 0 },
+                slots: { played: 0, won: 0, totalBet: 0, totalWon: 0 },
+                poker: { played: 0, won: 0, totalBet: 0, totalWon: 0 },
+                blackjack: { played: 0, won: 0, totalBet: 0, totalWon: 0 },
+                roulette: { played: 0, won: 0, totalBet: 0, totalWon: 0 }
+            }
+        };
+
+        if (USE_DATABASE) {
+            const checkUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+            if (checkUser.rows.length > 0) {
+                return res.status(409).json({ success: false, error: 'User with this email already exists.' });
+            }
+            
+            const newUserQuery = `
+                INSERT INTO users (username, email, password_hash, balance, gnc_wallet_address, total_won, total_lost, games_played, last_played, level, game_stats)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING id, username, email, balance, gnc_wallet_address;
+            `;
+            const values = [username, email, hashedPassword, initialUserData.balance, userWalletAddress, initialUserData.totalWon, initialUserData.totalLost, initialUserData.gamesPlayed, initialUserData.lastPlayed, initialUserData.level, initialUserData.gameStats];
+            const result = await pool.query(newUserQuery, values);
+            const user = result.rows[0];
+            const token = jwt.sign({ email: user.email, userId: user.id }, JWT_SECRET, { expiresIn: '24h' });
+            return res.status(201).json({ 
+                success: true, 
+                token, 
+                user: {
+                    ...user,
+                    walletAddress: userWalletAddress
+                }
+            });
+
+        } else {
+            if (wallets[email]) {
+                return res.status(409).json({ success: false, error: 'User with this email already exists.' });
+            }
+            const userId = Date.now();
+            wallets[email] = { id: userId, ...initialUserData };
+            await saveUserWallet(email, wallets[email]);
+            const token = jwt.sign({ email: email, userId: userId }, JWT_SECRET, { expiresIn: '24h' });
+            return res.status(201).json({ 
+                success: true, 
+                token, 
+                user: { 
+                    id: userId, 
+                    username, 
+                    email, 
+                    balance: initialUserData.balance,
+                    walletAddress: userWalletAddress
+                } 
+            });
+        }
+    } catch (error) {
+        console.error("Registration Error:", error);
+        return res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// ===================================================================================
+//
+// 🏦 GNC DEPOSIT & WITHDRAWAL ENDPOINTS
+//
+// ===================================================================================
+
+// Deposit GNC tokens to casino
+app.post('/api/deposit-gnc', authenticateToken, async (req, res) => {
+    const { amount, txHash } = req.body;
+    const userEmail = req.user.email;
+
+    if (!amount || !txHash) {
+        return res.status(400).json({ success: false, error: 'Amount and transaction hash required.' });
+    }
+
+    try {
+        // Get user data
+        let user;
+        if (USE_DATABASE) {
+            const result = await pool.query('SELECT * FROM users WHERE email = $1', [userEmail]);
+            user = result.rows[0];
+        } else {
+            user = wallets[userEmail];
+        }
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: 'User not found.' });
+        }
+
+        // Verify transaction on blockchain
+        const txStatus = await gncClient.getTransactionStatus(txHash);
+        if (!txStatus.success) {
+            return res.status(400).json({ success: false, error: 'Invalid transaction hash.' });
+        }
+
+        if (txStatus.confirmations < MIN_CONFIRMATIONS) {
+            return res.status(400).json({ 
+                success: false, 
+                error: `Transaction needs ${MIN_CONFIRMATIONS} confirmations. Current: ${txStatus.confirmations}` 
+            });
+        }
+
+        // Check if transaction already processed
+        if (USE_DATABASE) {
+            const existingTx = await pool.query('SELECT * FROM deposits WHERE tx_hash = $1', [txHash]);
+            if (existingTx.rows.length > 0) {
+                return res.status(400).json({ success: false, error: 'Transaction already processed.' });
+            }
+
+            // Record deposit and update balance
+            await pool.query('BEGIN');
+            await pool.query('INSERT INTO deposits (user_id, amount, tx_hash, status) VALUES ($1, $2, $3, $4)', 
+                [user.id, amount, txHash, 'completed']);
+            await pool.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [amount, user.id]);
+            await pool.query('COMMIT');
+        } else {
+            // File-based storage
+            if (!user.deposits) user.deposits = [];
+            if (user.deposits.some(d => d.txHash === txHash)) {
+                return res.status(400).json({ success: false, error: 'Transaction already processed.' });
+            }
+            
+            user.deposits.push({ amount, txHash, timestamp: new Date().toISOString(), status: 'completed' });
+            user.balance += amount;
+            await saveUserWallet(userEmail, user);
+        }
+
+        res.json({
+            success: true,
+            message: 'Deposit successful',
+            amount: amount,
+            newBalance: user.balance + amount,
+            txHash: txHash
+        });
+
+    } catch (error) {
+        if (USE_DATABASE) {
+            await pool.query('ROLLBACK');
+        }
+        console.error('Deposit Error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// Withdraw GNC tokens from casino
+app.post('/api/withdraw-gnc', authenticateToken, async (req, res) => {
+    const { amount, toAddress } = req.body;
+    const userEmail = req.user.email;
+
+    if (!amount || !toAddress) {
+        return res.status(400).json({ success: false, error: 'Amount and destination address required.' });
+    }
+
+    try {
+        // Validate destination address
+        const validation = await gncClient.validateAddress(toAddress);
+        if (!validation.success || !validation.valid) {
+            return res.status(400).json({ success: false, error: 'Invalid destination address.' });
+        }
+
+        // Get user data
+        let user;
+        if (USE_DATABASE) {
+            const result = await pool.query('SELECT * FROM users WHERE email = $1', [userEmail]);
+            user = result.rows[0];
+        } else {
+            user = wallets[userEmail];
+        }
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: 'User not found.' });
+        }
+
+        if (user.balance < amount) {
+            return res.status(400).json({ success: false, error: 'Insufficient balance.' });
+        }
+
+        // Execute blockchain transfer
+        const transfer = await gncClient.transferTokens(
+            CASINO_WALLET_ADDRESS, 
+            toAddress, 
+            amount, 
+            CASINO_PRIVATE_KEY
+        );
+
+        if (!transfer.success) {
+            return res.status(500).json({ success: false, error: 'Blockchain transfer failed.' });
+        }
+
+        // Update user balance and record withdrawal
+        if (USE_DATABASE) {
+            await pool.query('BEGIN');
+            await pool.query('INSERT INTO withdrawals (user_id, amount, to_address, tx_hash, status) VALUES ($1, $2, $3, $4, $5)', 
+                [user.id, amount, toAddress, transfer.transactionHash, 'completed']);
+            await pool.query('UPDATE users SET balance = balance - $1 WHERE id = $2', [amount, user.id]);
+            await pool.query('COMMIT');
+        } else {
+            if (!user.withdrawals) user.withdrawals = [];
+            user.withdrawals.push({ 
+                amount, 
+                toAddress, 
+                txHash: transfer.transactionHash, 
+                timestamp: new Date().toISOString(), 
+                status: 'completed' 
+            });
+            user.balance -= amount;
+            await saveUserWallet(userEmail, user);
+        }
+
+        res.json({
+            success: true,
+            message: 'Withdrawal successful',
+            amount: amount,
+            newBalance: user.balance - amount,
+            txHash: transfer.transactionHash,
+            toAddress: toAddress
+        });
+
+    } catch (error) {
+        if (USE_DATABASE) {
+            await pool.query('ROLLBACK');
+        }
+        console.error('Withdrawal Error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// Get combined GNC balances (casino + blockchain wallet)
+app.get('/api/gnc-balances', authenticateToken, async (req, res) => {
+    const userEmail = req.user.email;
+
+    try {
+        // Get user data
+        let user;
+        if (USE_DATABASE) {
+            const result = await pool.query('SELECT * FROM users WHERE email = $1', [userEmail]);
+            user = result.rows[0];
+        } else {
+            user = wallets[userEmail];
+        }
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: 'User not found.' });
+        }
+
+        // Get blockchain wallet balance
+        const blockchainBalance = await gncClient.getBalance(user.gnc_wallet_address || user.gncWalletAddress);
+
+        res.json({
+            success: true,
+            casinoBalance: user.balance,
+            blockchainBalance: blockchainBalance.success ? blockchainBalance.balance : 0,
+            totalBalance: user.balance + (blockchainBalance.success ? blockchainBalance.balance : 0),
+            walletAddress: user.gnc_wallet_address || user.gncWalletAddress
+        });
+
+    } catch (error) {
+        console.error('Balance Error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// Get transaction history
+app.get('/api/transaction-history', authenticateToken, async (req, res) => {
+    const userEmail = req.user.email;
+
+    try {
+        let user;
+        if (USE_DATABASE) {
+            const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [userEmail]);
+            if (userResult.rows.length === 0) {
+                return res.status(404).json({ success: false, error: 'User not found.' });
+            }
+            
+            const userId = userResult.rows[0].id;
+            const depositsResult = await pool.query('SELECT * FROM deposits WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+            const withdrawalsResult = await pool.query('SELECT * FROM withdrawals WHERE user_id = $1 ORDER BY created_at DESC', [userId]);
+            
+            const transactions = [
+                ...depositsResult.rows.map(d => ({ ...d, type: 'deposit' })),
+                ...withdrawalsResult.rows.map(w => ({ ...w, type: 'withdrawal' }))
+            ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+            res.json({ success: true, transactions });
+        } else {
+            user = wallets[userEmail];
+            if (!user) {
+                return res.status(404).json({ success: false, error: 'User not found.' });
+            }
+
+            const transactions = [
+                ...(user.deposits || []).map(d => ({ ...d, type: 'deposit' })),
+                ...(user.withdrawals || []).map(w => ({ ...w, type: 'withdrawal' }))
+            ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            res.json({ success: true, transactions });
+        }
+    } catch (error) {
+        console.error('Transaction History Error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// ===================================================================================
+//
+// 📊 ENHANCED STATS WITH GNC INTEGRATION
+//
+// ===================================================================================
+
+// Enhanced casino stats with GNC metrics
+app.get('/api/casino-stats', async (req, res) => {
+    try {
+        let allUsers;
+        if (USE_DATABASE) {
+            const result = await pool.query('SELECT username, balance, level, games_played, gnc_wallet_address FROM users');
+            allUsers = result.rows;
+        } else {
+            allUsers = Object.values(wallets);
+        }
+
+        const totalPlayers = allUsers.length;
+        const totalGames = allUsers.reduce((sum, u) => sum + (u.games_played || u.gamesPlayed || 0), 0);
+        const totalCasinoBalance = allUsers.reduce((sum, u) => sum + (u.balance || 0), 0);
+        
+        // Get casino's GNC wallet balance
+        const casinoGNCBalance = await gncClient.getBalance(CASINO_WALLET_ADDRESS);
+        
+        const topPlayers = allUsers
+            .filter(user => user.username)
+            .sort((a, b) => b.balance - a.balance)
+            .slice(0, 5)
+            .map(user => ({ 
+                username: user.username, 
+                balance: user.balance, 
+                level: user.level || 1 
+            }));
+
+        res.json({
+            stats: {
+                totalPlayers,
+                totalGames,
+                totalCasinoBalance,
+                casinoGNCBalance: casinoGNCBalance.success ? casinoGNCBalance.balance : 0,
+                activeGames: ['keno', 'slots', 'poker', 'blackjack', 'roulette']
+            },
+            topPlayers
+        });
+    } catch (error) {
+        console.error('Casino Stats Error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error.' });
+    }
+});
+
+// ===================================================================================
+//
+// 🛠️ DATABASE SCHEMA UPDATES (for PostgreSQL)
+//
+// ===================================================================================
+
+const initializeGNCTables = async () => {
+    if (!USE_DATABASE) return;
+    
+    try {
+        // Add GNC wallet address column to users table
+        await pool.query(`
+            ALTER TABLE users 
+            ADD COLUMN IF NOT EXISTS gnc_wallet_address VARCHAR(255);
+        `);
+
+        // Create deposits table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS deposits (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                amount DECIMAL(18, 8) NOT NULL,
+                tx_hash VARCHAR(255) UNIQUE NOT NULL,
+                status VARCHAR(50) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // Create withdrawals table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS withdrawals (
+                id SERIAL PRIMARY KEY,
+                user_id INTEGER REFERENCES users(id),
+                amount DECIMAL(18, 8) NOT NULL,
+                to_address VARCHAR(255) NOT NULL,
+                tx_hash VARCHAR(255) UNIQUE NOT NULL,
+                status VARCHAR(50) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        console.log('✅ GNC database tables initialized');
+    } catch (error) {
+        console.error('❌ Error initializing GNC tables:', error);
+    }
+};
+
+// Initialize GNC tables on startup
+if (USE_DATABASE) {
+    initializeGNCTables();
+}
+
+// ===================================================================================
+//
+// 🔄 BACKGROUND SERVICES
+//
+// ===================================================================================
+
+// Monitor pending transactions
+const monitorPendingTransactions = async () => {
+    if (!USE_DATABASE) return;
+    
+    try {
+        // Check pending deposits
+        const pendingDeposits = await pool.query('SELECT * FROM deposits WHERE status = $1', ['pending']);
+        for (const deposit of pendingDeposits.rows) {
+            const txStatus = await gncClient.getTransactionStatus(deposit.tx_hash);
+            if (txStatus.success && txStatus.confirmations >= MIN_CONFIRMATIONS) {
+                await pool.query('UPDATE deposits SET status = $1 WHERE id = $2', ['completed', deposit.id]);
+                await pool.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [deposit.amount, deposit.user_id]);
+                console.log(`✅ Deposit confirmed: ${deposit.tx_hash}`);
+            }
+        }
+
+        // Check pending withdrawals
+        const pendingWithdrawals = await pool.query('SELECT * FROM withdrawals WHERE status = $1', ['pending']);
+        for (const withdrawal of pendingWithdrawals.rows) {
+            const txStatus = await gncClient.getTransactionStatus(withdrawal.tx_hash);
+            if (txStatus.success && txStatus.confirmations >= MIN_CONFIRMATIONS) {
+                await pool.query('UPDATE withdrawals SET status = $1 WHERE id = $2', ['completed', withdrawal.id]);
+                console.log(`✅ Withdrawal confirmed: ${withdrawal.tx_hash}`);
+            }
+        }
+    } catch (error) {
+        console.error('Monitor Error:', error);
+    }
+};
+
+// Run monitoring every 30 seconds
+if (USE_DATABASE) {
+    setInterval(monitorPendingTransactions, 30000);
+}
+
+module.exports = { gncClient, initializeGNCTables };
